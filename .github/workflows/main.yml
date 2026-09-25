@@ -1,0 +1,58 @@
+name: Cortex CLI Code Scan
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CORTEX_API_KEY: ${{ secrets.CORTEX_API_KEY }}
+  CORTEX_API_KEY_ID: ${{ secrets.CORTEX_API_KEY_ID }}
+  CORTEX_API_URL: https://api-e-cxsiamp.xdr.us.paloaltonetworks.com
+
+jobs:
+  cortex-code-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Download latest Cortex CLI
+      run: |
+        crtx_resp=$(curl -s "${CORTEX_API_URL}/public_api/v1/unified-cli/releases/download-link?os=linux&architecture=amd64" \
+          -H "x-xdr-auth-id: ${CORTEX_API_KEY_ID}" \
+          -H "Authorization: ${CORTEX_API_KEY}")
+        crtx_url=$(echo "$crtx_resp" | jq -r '.signed_url')
+        crtx_file=$(echo "$crtx_resp" | jq -r '.file_name')
+        curl -s -o "$crtx_file" "$crtx_url"
+
+        # Extract if it's an archive, otherwise treat it as the binary
+        case "$crtx_file" in
+          *.tar.gz|*.tgz) tar -xzf "$crtx_file" ;;
+          *.tar.xz)       tar -xJf "$crtx_file" ;;
+          *.zip)          unzip -q "$crtx_file" ;;
+        esac
+        BIN=$(find . -maxdepth 2 -type f -name 'cortexcli*' ! -name '*.tar*' ! -name '*.zip' | head -1)
+        chmod +x "$BIN"
+        sudo mv "$BIN" /usr/local/bin/cortexcli
+        cortexcli --version
+
+    - name: Run Code Scan
+      run: |
+        cortexcli \
+          --api-base-url "${CORTEX_API_URL}" \
+          --api-key "${CORTEX_API_KEY}" \
+          --api-key-id "${CORTEX_API_KEY_ID}" \
+          --log-level debug \
+          code scan \
+          --directory "${{ github.workspace }}" \
+          --repo-id "${{ github.repository }}" \
+          --branch "${{ github.ref_name }}" \
+          --source 'GITHUB_ACTIONS' \
+          --create-repo-if-missing
+
+    - name: Show CLI log on failure
+      if: failure()
+      run: cat /tmp/cortexcli-*.log || true
